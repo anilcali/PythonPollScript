@@ -2,8 +2,8 @@
 
 import itertools as it, operator as op, functools as ft
 from collections import namedtuple, Mapping, ChainMap, OrderedDict
-import asyncio, signal, contextlib
-import os, sys, logging, pathlib, time
+import sqlite3, asyncio, signal, contextlib
+import os, sys, logging, pathlib, time, re
 
 import yaml # http://pyyaml.org/
 
@@ -92,61 +92,70 @@ class ConsolePollerDB:
 		self.loop, self.conf, self.q, self.cmd_store = loop, conf, queue, cmd_store
 		self.log = get_logger('poller.db')
 
-	async def init(self):
+	def convert_type(self, col_name, col_type, entry=None, value=None):
+		t = re.findall(r'^\s*(\w+)', col_type)[0]
+		if t in ['int', 'float', 'real', 'varchar', 'text', 'char']:
+			if not value: value = None
+			elif t == 'int': value = int(value)
+			elif t in ['float', 'real']: col_type, value = 'real', int(value)
+			else: value = str(value).encode()
+			return col_type, value
+		if t in ['host', 'time']:
+			col_type = {'host': 'varchar', 'time': 'int'}[t]
+			if not entry: value = None
+			elif t == 'host': value = entry.host
+			elif t == 'time': value = entry.ts
+			return col_type, value
+		raise ConfigError(f'Unknown db column type: {col_type} (column: {col_name})')
+
+	def init(self):
 		tables = dict()
-		self.pool = await aioodbc.create_pool(
-			dsn=self.conf.dsn, loop=self.loop, **(self.conf.get('pool') or dict()) )
+		self.db = sqlite3.connect(self.conf.path, timeout=60)
 		for store_spec in self.cmd_store.values():
 			tables.setdefault(store_spec.table, OrderedDict()).update(store_spec.columns)
-		async with self.pool.acquire() as conn, conn.cursor() as cur:
-			for table, columns in tables.items():
-				await cur.execute(
-					'CREATE TABLE IF NOT EXISTS {} (\n{}\n);'.format(
-						table, ',\n'.join(f'{name} {spec}' for name, spec in columns.items()) ) )
-			await cur.commit()
+		for table, columns in tables.items():
+			col_specs = list()
+			for name, spec in columns.items():
+				col_type, value = self.convert_type(name, spec)
+				col_specs.append(f'{name} {col_type}')
+			self.db.execute( 'CREATE TABLE IF NOT'
+				' EXISTS {} (\n{}\n);'.format(table, ',\n'.join(col_specs)) )
+		self.db.commit()
 
-	async def release(self, wait_timeout=2.0):
-		self.q.put_nowait(StopIteration)
-		if self.pool:
-			self.pool.close()
-			try: await asyncio.wait_for(self.pool.wait_closed(), wait_timeout)
-			except asyncio.TimeoutError as err:
-				self.log.error('Timed-out waiting for db conns to close ({:.1f}s)', wait_timeout)
-			self.pool = None
+	def close(self):
+		self.db.close()
 
 	async def run(self):
-		self.log.debug('Starting ConsolePollerDB task...')
-		entries = None
+		commit_delay = self.conf.get('commit_delay') or 0
+		self.log.debug( 'Starting ConsolePollerDB'
+			' task (commit_delay: {:.2f})...', commit_delay )
 		while True:
-			if not entries:
-				entries = [await self.q.get()]
-				while True:
-					try: entries.append(self.q.get_nowait())
-					except asyncio.QueueEmpty: break
-			elif entries is StopIteration: break
-
-			async with self.pool.acquire() as conn, conn.cursor() as cur:
-				try:
-					for entry in entries:
-						if entry is StopIteration:
-							entries = entry
+			entries = [await self.q.get()]
+			if commit_delay > 0: await asyncio.sleep(commit_delay)
+			while True: # try to commit in as large batches as possible
+				try: entries.append(self.q.get_nowait())
+				except asyncio.QueueEmpty: break
+			try:
+				self.log.debug('Storing {} data entries', len(entries))
+				for entry in entries:
+					if entry is StopIteration: break
+					entry_data, store_spec = OrderedDict(), self.cmd_store[entry.cmd_id]
+					for (col_name, spec), value_raw in it.zip_longest(
+							store_spec.columns.items(), entry.column_data ):
+						col_type, value = self.convert_type(col_name, spec, entry, value_raw)
+						if value is None:
+							self.log.error( 'Missing value for column {!r} (type: {}, table: {}),'
+								' discarding whole entry: {}', col_name, spec, store_spec.table, entry )
 							break
-						self.log.debug('Storing data entry: {}', entry)
-						store_spec = self.cmd_store[entry.cmd_id]
-						entry_data = OrderedDict(zip(store_spec.columns, entry.column_data))
-						cur.execute(
-							'INSERTxx INTO {} ({}) VALUES {}'.format( store_spec.table,
+						entry_data[col_name] = value
+					else:
+						self.db.execute(
+							'INSERT INTO {} ({}) VALUES ({})'.format( store_spec.table,
 								', '.join(entry_data.keys()), ', '.join(['?']*len(entry_data)) ),
-							entry_data.values() )
-					else: entries = None
-					cur.commit()
-				# except pyodbc.OperationalError:
-				except pyodbc.Error as err:
-					help(err) # XXX: reconnect
-					os._exit(1)
-					await conn.close()
-					conn = None
-				else: entry = None
+							list(entry_data.values()) )
+				else: continue
+				break
+			finally: self.db.commit()
 
 
 class PollerError(Exception): pass
@@ -176,11 +185,11 @@ class ConsolePollerDaemon:
 				raise ConfigError(f'Invalid storage options for command: {cmd_opts}')
 		self.db_queue = asyncio.Queue()
 		self.db = ConsolePollerDB(self.loop, self.db_queue, self.conf.database, cmd_store)
-		await self.db.init()
+		self.db.init()
 		return self
 
 	async def __aexit__(self, *err):
-		await self.db.release()
+		self.db.close()
 
 	async def run(self):
 		tasks = [
@@ -317,10 +326,9 @@ def main(args=None):
 		conf.options.poll_interval = opts.poll_interval
 		for host_opts in conf.hosts.values(): host_opts.poll_interval = opts.poll_interval
 
-	if conf.database.get('dsn', 'auto') == 'auto':
+	if (conf.database.get('path') or 'auto') == 'auto':
 		p = pathlib.Path(conf_paths[-1])
-		conf.database.dsn = ( 'driver=sqlite;'
-			'database={}'.format(p.parent / (p.stem + '.sqlite')) )
+		conf.database.path = str(p.parent / (p.stem + '.sqlite'))
 
 	log.debug('Starting main eventloop...')
 	with contextlib.closing(asyncio.get_event_loop()) as loop:
