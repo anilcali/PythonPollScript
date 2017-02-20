@@ -6,7 +6,6 @@ import asyncio, signal, contextlib
 import os, sys, logging, pathlib, time
 
 import yaml # http://pyyaml.org/
-import aioodbc # https://github.com/aio-libs/aioodbc
 
 
 
@@ -117,33 +116,40 @@ class ConsolePollerDB:
 
 	async def run(self):
 		self.log.debug('Starting ConsolePollerDB task...')
-		conn = entry = None
-		try:
-			while True:
-				if not entry: entry = await self.q.get()
-				if not conn: conn = await self.pool.acquire()
-				if entry is StopIteration: break
-				self.log.debug('Storing data entry: {}', entry)
-				store_spec = self.cmd_store[entry.cmd_id]
-				entry_data = OrderedDict(zip(store_spec.columns, entry.columns))
+		entries = None
+		while True:
+			if not entries:
+				entries = [await self.q.get()]
+				while True:
+					try: entries.append(self.q.get_nowait())
+					except asyncio.QueueEmpty: break
+			elif entries is StopIteration: break
+
+			async with self.pool.acquire() as conn, conn.cursor() as cur:
 				try:
-					with conn.cursor() as cur:
+					for entry in entries:
+						if entry is StopIteration:
+							entries = entry
+							break
+						self.log.debug('Storing data entry: {}', entry)
+						store_spec = self.cmd_store[entry.cmd_id]
+						entry_data = OrderedDict(zip(store_spec.columns, entry.column_data))
 						cur.execute(
-							'INSERTxx INTO {} ({}) VALUES {}'.format(
-								store_spec.table, ', '.join(entry_data.keys()), ', '.join(['?']*len(entry_data)) ),
+							'INSERTxx INTO {} ({}) VALUES {}'.format( store_spec.table,
+								', '.join(entry_data.keys()), ', '.join(['?']*len(entry_data)) ),
 							entry_data.values() )
-						cur.commit()
+					else: entries = None
+					cur.commit()
 				# except pyodbc.OperationalError:
 				except pyodbc.Error as err:
 					help(err) # XXX: reconnect
 					os._exit(1)
-					conn = cur = None
+					await conn.close()
+					conn = None
 				else: entry = None
 
-		finally:
-			if conn: await conn.close()
 
-
+class PollerError(Exception): pass
 
 class ConsolePollerDaemon:
 
@@ -192,39 +198,21 @@ class ConsolePollerDaemon:
 		return self.success
 
 	async def run_daemon(self):
-		pollers, data_queue = dict(), asyncio.Queue()
+		pollers = dict()
 		for host, host_opts in self.conf.hosts.items():
 			opts = self.conf.options.copy()
 			opts.update(host_opts)
 			self.log.debug('Initializing poller for host: {}', host)
 			poller = ConsolePoller.run_task(
-				self.loop, data_queue, host, opts, self.conf.commands )
+				self.loop, self.db_queue, host, opts, self.conf.commands )
 			pollers[host] = poller.task.cpd_poller = poller
-
 		self.log.debug('Starting ConsolePollerDaemon loop...')
-		task_queue, task_list_pollers = None, set(p.task for p in pollers.values())
-		try:
-			while task_list_pollers:
-				if not task_queue or task_queue.done():
-					task_queue = self.loop.create_task(data_queue.get())
-				done, pending = await asyncio.wait(
-					[task_queue, *task_list_pollers],
-					return_when=asyncio.FIRST_COMPLETED )
-				for task in done:
-					if task is task_queue:
-						task_queue, data = None, task_queue.result() # XXX: structured data msg
-						self.log.debug('Data entry from poller: {!r}', data) # XXX: store to db
-						continue
-					err = task.exception()
-					exc_info = type(err), err, err.__traceback__
-					self.log.error( 'Unexpected ConsolePoller failure for host {!r},'
-						' *DISCARDING IT*: {} {}', task.cpd_poller.host, type(err), err, exc_info=exc_info )
-					task_list_pollers.remove(task)
+		try: await asyncio.gather(*(p.task for p in pollers.values()))
 		finally:
-			for task in filter(lambda t: t and not t.done(), [task_queue, *task_list_pollers]):
-				with contextlib.suppress(asyncio.CancelledError):
-					task.cancel()
-					await task
+			for p in pollers.values():
+				if p.task.done(): continue
+				p.task.cancel()
+				with contextlib.suppress(asyncio.CancelledError): await p.task
 
 
 class ConsolePoller:
