@@ -1,0 +1,96 @@
+## Example configuration file
+
+
+## options: global options that apply to all hosts.
+## Any of these can be overidden on per-host level.
+options:
+  ## poll_interval: interval between running commands on hosts (seconds).
+  poll_interval: 180
+  ## poll_initial_jitter: randomized delay before first poll for each host (seconds).
+  ## This is to avoid resource usage spike on start, when all hosts have to be polled.
+  poll_initial_jitter: 180
+
+  ## user/password: authentication credentials for host(s). Empty - auth disabled.
+  # user: admin
+  # password: admin
+
+  ## telnet: options for establishing telnet connections.
+  telnet:
+    port: 2233 # XXX
+    re_login: '\bLogin:\s*$'
+    re_password: '\bPassword:\s*$'
+    re_shell: '#\s*$' # must be matched after auth and before each command
+
+  ## ssh_opts: ssh command-line options, can be either space-delimited string or a list.
+  ssh_opts:
+
+  ## cache: various caching options
+  cache:
+    access_type: true # to avoid trying telnet every time after it's a known-ssh host
+    address: true # resolve hostnames for telnet connections only once on start
+
+  ## timeout: how long to wait for each step of the polling process, in seconds.
+  timeout:
+    connect: 20
+    auth: 20
+    shell: 10 # for shell prompt to appear before next command
+    data: 10 # for first line after each command, if it should be stored in db
+
+
+## hosts: names/addresses of hosts to poll and per-host option overrides.
+## All options from "options" section apply to each host here, unless overidden.
+hosts:
+  localhost: # XXX
+    user: admin
+    password: admin
+  # host2:
+  #   user: admin
+  #   password: admin
+
+
+## commands: sequence of commands to run (pass on console) for each host.
+commands:
+
+  ## command: command line to pass on console.
+  ## Note that single or double quotes are also parsed by yaml, so have to be wrapped.
+  ## Example: command: 'echo "double quotes get passed to shell here"'
+  ## Example: command: "ls -lah 'path with space' \"$PWD\""
+  - command: command1 arg other-arg
+    ## store_line: if this section is specified for command, first line
+    ##  of its output will be stored in the specified database table/columns.
+    store_line:
+      table: table1 # db table to store output to
+      ## columns: sequence of columns for each column of output.
+      ## Each sequence item must have a single column name and type as a mapping.
+      ## Special auto-filled column types: host (from "hosts" above), time (response timestamp).
+      columns:
+        - column1: varchar
+        - column2: varchar
+        - column3: varchar
+        - column4: int
+        - hostname: host
+        - time: time
+
+  - command: cmd2 -e 'some stuff' -x -- arg1 arg2
+    store_line:
+      table: table2
+      columns:
+        - column5: varchar
+        - column6: int
+        - column7: int
+        - column8: float
+        - hostname: host
+        - time: time
+
+  ## This command has no "store_line" section, so its output is discarded.
+  - command: shutdown -r
+
+
+## database: misc SQLite3 database connection options and settings.
+database:
+  ## path: sqlite db path to use, will be created if missing.
+  ## Default is "auto" - to use same path as the config plus .sqlite extension.
+  path: auto
+  ## commit_delay: seconds to wait before for extra data entries to commit in one batch.
+  ## 0 to insert/commit each individual entry immediately.
+  commit_delay: 0.5
