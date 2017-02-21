@@ -27,16 +27,10 @@ options:
     ## opts: extra options to pass to binary, either list or a space-separated string.
     ## Note that the binary will read the usual ssh config files as well, things can be specified there.
     ## Default -qT options should probably be always preserved for correct operation.
-    ## Example: opts: -qT -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null
     ## Example: opts: [-qT, -p2222, '-oProxyCommand=ssh -W %h:%p jumphost.example.org']
-    opts: -qT
+    opts: -qT -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null
     ## binary: name (will be looked-up in PATH) or full path to openssh "ssh" binary.
     binary: ssh
-    ## use_askpass: use ssh_askpass mechanism to authenticate.
-    use_askpass: true
-    ## re_*: regexps (python) to match auth and shell prompts.
-    re_password: '\bpassword:\s*$'
-    re_known_hosts: '\bauthenticity of host\b'
 
   ## cache: various caching options
   cache:

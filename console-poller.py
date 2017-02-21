@@ -3,7 +3,7 @@
 import itertools as it, operator as op, functools as ft
 from collections import namedtuple, Mapping, ChainMap, OrderedDict
 import sqlite3, asyncio, asyncio.subprocess, socket, signal, contextlib
-import os, sys, pty, logging, pathlib, time, re, random
+import os, sys, logging, pathlib, time, re, random, tempfile
 
 import yaml # http://pyyaml.org/
 
@@ -321,59 +321,39 @@ class TelnetConsole:
 				else: line_buff.append(line)
 
 
-class SSHPtyStdin(asyncio.BaseProtocol):
-	transport = None
-	def connection_made(self, transport): self.transport = transport
-	def connection_lost(self, exc): self.transport = None
-	def close(self):
-		if self.transport: self.transport.close()
-	def abort(self):
-		if self.transport: self.transport.abort()
-	def writeline(self, line):
-		if not self.transport: return
-		self.transport.write(f'{line}\n'.encode())
-
 class SSHConsole:
 
-	proc = r = w = None
+	proc = askpass = None
 
 	def __init__(self, loop): self.loop = loop
 
 	async def __aenter__(self): return self
 	async def __aexit__(self, *err):
-		if self.w: self.w.abort()
+		if self.askpass:
+			with contextlib.suppress(OSError): os.unlink(self.askpass)
 		if self.proc and self.proc.returncode is None:
 			with contextlib.suppress(OSError): self.proc.kill()
 			await self.proc.wait()
 
-	async def start(self, cmd):
-		self.proc = self.r = self.w = None
-		pty_out_w, pty_out_r = pty.openpty()
-		pty_in_w, pty_in_r = pty.openpty()
-		try:
-			self.r, self.w = asyncio.StreamReader(), SSHPtyStdin()
-			await self.loop.connect_read_pipe(
-				lambda: asyncio.StreamReaderProtocol(self.r), os.fdopen(pty_in_r, 'r') )
-			await self.loop.connect_write_pipe(lambda: self.w, os.fdopen(pty_out_w, 'w'))
-			self.proc = await asyncio.create_subprocess_exec( *cmd,
-				# env=dict(DISPLAY=':1', SSH_ASKPASS=ssh_askpass),
-				stdin=pty_out_r, stdout=pty_in_w, stderr=asyncio.subprocess.DEVNULL )
-			# self.r = self.proc.stdout
-		except:
-			for fd in pty_out_r, pty_out_w, pty_in_r, pty_in_w: os.close(fd)
-			raise
+	async def start(self, cmd, password):
+		fd, self.askpass = tempfile.mkstemp(suffix='.sh', prefix='.console-poller.ssh-askpass.')
+		with os.fdopen(fd, 'w') as dst:
+			dst.write('#!/bin/bash\necho \'{}\'\n'.format((password or '').replace("'", "'\\''")))
+		os.chmod(self.askpass, 0o700)
+		self.proc = await asyncio.create_subprocess_exec( *cmd,
+			env=dict(DISPLAY=':1', SSH_ASKPASS=self.askpass),
+			stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.DEVNULL, preexec_fn=os.setsid )
 
 	async def stop(self, timeout=None):
-		if self.w:
-			self.w.close()
-			self.w = None
 		if not self.proc: return
+		self.proc.stdin.close()
 		if self.proc.returncode is None:
-			ts_max = self.loop.time() + timeout
+			ts_max = self.loop.time() + (timeout or 20)
 			get_timeout = lambda: max(0.01, ts_max - self.loop.time())
 			try:
 				await asyncio_wait_or_cancel(
-					self.loop, self.proc.wait(), get_timeout() )
+					self.loop, self.proc.wait(), min(2.0, get_timeout()) )
 			except asyncio.TimeoutError:
 				with contextlib.suppress(OSError): # no such pid
 					self.proc.terminate()
@@ -382,12 +362,11 @@ class SSHConsole:
 							self.loop, self.proc.wait(), get_timeout() )
 					except asyncio.TimeoutError: self.proc.kill()
 			if self.proc.returncode is None: await self.proc.wait() # must exit after kill
-		exit_code = self.proc.returncode
-		self.proc = self.r = self.w = None
+		exit_code, self.proc = self.proc.returncode, None
 		return exit_code
 
-	def writeline(self, line): self.w.writeline(line)
-	async def readline(self): return await self.r.readline()
+	def writeline(self, line): self.proc.stdin.write(f'{line}\n'.encode())
+	async def readline(self): return (await self.proc.stdout.readline()).decode()
 
 
 class ConsolePoller:
@@ -531,16 +510,7 @@ class ConsolePoller:
 			if isinstance(cmd, str): cmd = cmd.split()
 			cmd = [self.conf.ssh.binary, f'{self.conf.user}@{conn_dst}', *cmd]
 			log.debug('Starting ssh subprocess: {}', cmd)
-			await console.start(cmd) # should be no timeouts here
-
-			password = self.conf.password
-			if password:
-				log.debug('Auth...')
-				try:
-					await asyncio_wait_or_cancel( self.loop,
-						self.run_poll_ssh_auth(console, password), self.conf.timeout.auth )
-				except asyncio.TimeoutError:
-					return log.info('Authentication for {!r} timed-out', conn_dst)
+			await console.start(cmd, self.conf.password)
 
 			for cmd_id, cmd in enumerate(self.cmds):
 				try:
@@ -549,28 +519,17 @@ class ConsolePoller:
 					if cmd.get('store_line'):
 						entry = await asyncio_wait_or_cancel(
 							self.loop, console.readline(), self.conf.timeout.data )
-						if self.conf.ssh.re_password and re.search(self.conf.ssh.re_password, line):
-							return log.info('Authentication for {!r} failed', conn_dst)
 						log.debug('Data for command #{}: {!r}', cmd_id, entry)
 						data.append(DataEntry(self.host, time.time(), cmd_id, entry.split()))
 				except asyncio.TimeoutError:
 					return log.info('Command #{} (host={!r}) timed-out', cmd_id, conn_dst)
 
-			exit_code = await console.stop()
+			log.debug('Stopping ssh subprocess...')
+			exit_code = await console.stop(timeout=self.conf.timeout.kill)
 			if exit_code != 0:
 				log.error('Subprocess for {!r} exited with error code {}', conn_dst, exit_code)
 
 		return data
-
-	async def run_poll_ssh_auth(self, console, password):
-		while True:
-			line = (await console.readline()).decode()
-			if not line: break
-			if re.search(self.conf.ssh.re_known_hosts, line):
-				console.writeline('yes')
-			elif password and re.search(self.conf.ssh.re_password, line):
-				console.writeline(password)
-				break
 
 
 def main(args=None):
