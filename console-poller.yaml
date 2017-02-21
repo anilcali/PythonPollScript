@@ -16,7 +16,7 @@ options:
 
   ## telnet: options for establishing telnet connections.
   telnet:
-    port: 2233 # XXX
+    port: 23
     ## re_*: regexps (python) to match auth and shell prompts.
     re_login: '\bLogin:\s*$'
     re_password: '\bPassword:\s*$'
@@ -49,12 +49,14 @@ options:
 ## hosts: names/addresses of hosts to poll and per-host option overrides.
 ## All options from "options" section apply to each host here, unless overidden.
 hosts:
-  localhost: # XXX
+  localhost:
     user: ssh-test
     password: admin
-  # host2:
+  # cane:
   #   user: admin
   #   password: admin
+  #   telnet:
+  #     port: 2233
 
 
 ## commands: sequence of commands to run (pass on console) for each host.
@@ -91,8 +93,8 @@ commands:
   #       - hostname: host
   #       - time: time
 
-  # ## This command has no "store_line" section, so its output is discarded.
-  # - command: shutdown -r
+  ## This command has no "store_line" section, so its output is discarded.
+  - command: shutdown -r
 
 
 ## database: misc SQLite3 database connection options and settings.

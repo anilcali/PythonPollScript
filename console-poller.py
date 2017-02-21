@@ -249,7 +249,7 @@ class ConsolePollerDaemon:
 		pollers = dict()
 		for host, host_conf in self.conf.hosts.items():
 			conf = self.conf.options.copy()
-			conf.update(host_conf)
+			conf.maps.insert(0, host_conf)
 			self.log.debug('Initializing poller for host: {}', host)
 			poller = ConsolePoller.run_task(
 				self.loop, self.db_queue, host, conf, self.conf.commands )
@@ -646,6 +646,8 @@ def db_interactive_query(conf, cmd_store):
 					print()
 
 
+
+### Main non-interactive CLI and entry point
 
 def main(args=None):
 	import argparse
