@@ -17,6 +17,7 @@ options:
   ## telnet: options for establishing telnet connections.
   telnet:
     port: 2233 # XXX
+    ## re_*: regexps (python) to match auth and shell prompts.
     re_login: '\bLogin:\s*$'
     re_password: '\bPassword:\s*$'
     re_shell: '#\s*$' # must be matched after auth and before each command
@@ -25,16 +26,22 @@ options:
   ssh:
     ## opts: extra options to pass to binary, either list or a space-separated string.
     ## Note that the binary will read the usual ssh config files as well, things can be specified there.
-    ## Example: opts: -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null
-    ## Example: opts: [-p2222, '-oProxyCommand=ssh -W %h:%p jumphost.example.org']
-    opts:
+    ## Default -qT options should probably be always preserved for correct operation.
+    ## Example: opts: -qT -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null
+    ## Example: opts: [-qT, -p2222, '-oProxyCommand=ssh -W %h:%p jumphost.example.org']
+    opts: -qT
+    ## binary: name (will be looked-up in PATH) or full path to openssh "ssh" binary.
+    binary: ssh
+    ## use_askpass: use ssh_askpass mechanism to authenticate.
+    use_askpass: true
+    ## re_*: regexps (python) to match auth and shell prompts.
     re_password: '\bpassword:\s*$'
-    re_shell: '[#$%]\s*$' # must be matched after auth and before each command
+    re_known_hosts: '\bauthenticity of host\b'
 
   ## cache: various caching options
   cache:
     access_type: true # to avoid trying telnet every time after it's a known-ssh host
-    address: true # resolve hostnames for telnet connections only once on start
+    address: true # resolve hostnames for connections only once on start
 
   ## timeout: how long to wait for each step of the polling process, in seconds.
   timeout:
@@ -42,13 +49,14 @@ options:
     auth: 20
     shell: 10 # for shell prompt to appear before next command
     data: 10 # for first line after each command, if it should be stored in db
+    kill: 5 # before sending SIGKILL to unresponsive ssh subprocess
 
 
 ## hosts: names/addresses of hosts to poll and per-host option overrides.
 ## All options from "options" section apply to each host here, unless overidden.
 hosts:
   localhost: # XXX
-    user: admin
+    user: ssh-test
     password: admin
   # host2:
   #   user: admin
@@ -62,7 +70,7 @@ commands:
   ## Note that single or double quotes are also parsed by yaml, so have to be wrapped.
   ## Example: command: 'echo "double quotes get passed to shell here"'
   ## Example: command: "ls -lah 'path with space' \"$PWD\""
-  - command: command1 arg other-arg
+  - command: echo val-1 val-2 val-3 444
     ## store_line: if this section is specified for command, first line
     ##  of its output will be stored in the specified database table/columns.
     store_line:
@@ -78,19 +86,19 @@ commands:
         - hostname: host
         - time: time
 
-  - command: cmd2 -e 'some stuff' -x -- arg1 arg2
-    store_line:
-      table: table2
-      columns:
-        - column5: varchar
-        - column6: int
-        - column7: int
-        - column8: float
-        - hostname: host
-        - time: time
+  # - command: cmd2 -e 'some stuff' -x -- arg1 arg2
+  #   store_line:
+  #     table: table2
+  #     columns:
+  #       - column5: varchar
+  #       - column6: int
+  #       - column7: int
+  #       - column8: float
+  #       - hostname: host
+  #       - time: time
 
-  ## This command has no "store_line" section, so its output is discarded.
-  - command: shutdown -r
+  # ## This command has no "store_line" section, so its output is discarded.
+  # - command: shutdown -r
 
 
 ## database: misc SQLite3 database connection options and settings.

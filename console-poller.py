@@ -2,8 +2,8 @@
 
 import itertools as it, operator as op, functools as ft
 from collections import namedtuple, Mapping, ChainMap, OrderedDict
-import sqlite3, asyncio, socket, signal, contextlib
-import os, sys, logging, pathlib, time, re, random
+import sqlite3, asyncio, asyncio.subprocess, socket, signal, contextlib
+import os, sys, pty, logging, pathlib, time, re, random
 
 import yaml # http://pyyaml.org/
 
@@ -23,6 +23,18 @@ class LogStyleAdapter(logging.LoggerAdapter):
 		log_kws = {} if 'exc_info' not in kws else dict(exc_info=kws.pop('exc_info'))
 		msg, kws = self.process(msg, kws)
 		self.logger.log(level, LogMessage(msg, args, kws), **log_kws)
+
+class LogPrefixAdapter(LogStyleAdapter):
+	def __init__(self, logger, prefix=None, prefix_raw=False, extra=None):
+		if isinstance(logger, str): logger = get_logger(logger)
+		if isinstance(logger, logging.LoggerAdapter): logger = logger.logger
+		super(LogPrefixAdapter, self).__init__(logger, extra or {})
+		if not prefix: prefix = get_uid()
+		if not prefix_raw: prefix = '[{}] '.format(prefix)
+		self.prefix = prefix
+	def process(self, msg, kws):
+		super(LogPrefixAdapter, self).process(msg, kws)
+		return ('{}{}'.format(self.prefix, msg), kws)
 
 get_logger = lambda name: LogStyleAdapter(logging.getLogger(name))
 
@@ -309,6 +321,75 @@ class TelnetConsole:
 				else: line_buff.append(line)
 
 
+class SSHPtyStdin(asyncio.BaseProtocol):
+	transport = None
+	def connection_made(self, transport): self.transport = transport
+	def connection_lost(self, exc): self.transport = None
+	def close(self):
+		if self.transport: self.transport.close()
+	def abort(self):
+		if self.transport: self.transport.abort()
+	def writeline(self, line):
+		if not self.transport: return
+		self.transport.write(f'{line}\n'.encode())
+
+class SSHConsole:
+
+	proc = r = w = None
+
+	def __init__(self, loop): self.loop = loop
+
+	async def __aenter__(self): return self
+	async def __aexit__(self, *err):
+		if self.w: self.w.abort()
+		if self.proc and self.proc.returncode is None:
+			with contextlib.suppress(OSError): self.proc.kill()
+			await self.proc.wait()
+
+	async def start(self, cmd):
+		self.proc = self.r = self.w = None
+		pty_out_w, pty_out_r = pty.openpty()
+		pty_in_w, pty_in_r = pty.openpty()
+		try:
+			self.r, self.w = asyncio.StreamReader(), SSHPtyStdin()
+			await self.loop.connect_read_pipe(
+				lambda: asyncio.StreamReaderProtocol(self.r), os.fdopen(pty_in_r, 'r') )
+			await self.loop.connect_write_pipe(lambda: self.w, os.fdopen(pty_out_w, 'w'))
+			self.proc = await asyncio.create_subprocess_exec( *cmd,
+				# env=dict(DISPLAY=':1', SSH_ASKPASS=ssh_askpass),
+				stdin=pty_out_r, stdout=pty_in_w, stderr=asyncio.subprocess.DEVNULL )
+			# self.r = self.proc.stdout
+		except:
+			for fd in pty_out_r, pty_out_w, pty_in_r, pty_in_w: os.close(fd)
+			raise
+
+	async def stop(self, timeout=None):
+		if self.w:
+			self.w.close()
+			self.w = None
+		if not self.proc: return
+		if self.proc.returncode is None:
+			ts_max = self.loop.time() + timeout
+			get_timeout = lambda: max(0.01, ts_max - self.loop.time())
+			try:
+				await asyncio_wait_or_cancel(
+					self.loop, self.proc.wait(), get_timeout() )
+			except asyncio.TimeoutError:
+				with contextlib.suppress(OSError): # no such pid
+					self.proc.terminate()
+					try:
+						await asyncio_wait_or_cancel(
+							self.loop, self.proc.wait(), get_timeout() )
+					except asyncio.TimeoutError: self.proc.kill()
+			if self.proc.returncode is None: await self.proc.wait() # must exit after kill
+		exit_code = self.proc.returncode
+		self.proc = self.r = self.w = None
+		return exit_code
+
+	def writeline(self, line): self.w.writeline(line)
+	async def readline(self): return await self.r.readline()
+
+
 class ConsolePoller:
 
 	@classmethod
@@ -322,13 +403,13 @@ class ConsolePoller:
 		self.host, self.host_cached, self.access_type = host, None, None
 		self.log = get_logger('poller.host.{}'.format(host.replace('_', '__').replace('.', '_')))
 
-	def host_resolve_cache(self):
+	async def host_resolve_cache(self):
 		if not self.conf.cache.get('address'):
 			self.host_cached = False
 			return
 		sock_proto = socket.IPPROTO_TCP
 		try:
-			addrinfo = socket.getaddrinfo( self.host,
+			addrinfo = await self.loop.getaddrinfo( self.host,
 				self.conf.telnet.port, proto=sock_proto, type=socket.SOCK_STREAM )
 			if not addrinfo:
 				self.log.debug('getaddrinfo - no address found for hostname {!r}', self.host)
@@ -363,25 +444,26 @@ class ConsolePoller:
 
 
 	async def run_poll_telnet(self):
-		if self.host_cached is None: self.host_resolve_cache()
+		if self.host_cached is None: await self.host_resolve_cache()
 		conn_dst = self.host_cached or dict(
-			host=host, port=self.conf.telnet_port, proto=socket.IPPROTO_TCP )
+			host=self.host, port=self.conf.telnet_port, proto=socket.IPPROTO_TCP )
+		log = LogPrefixAdapter(self.log, 'telnet')
 
 		data = list()
 		async with TelnetConsole(self.loop) as console:
-			self.log.debug('[poll-status] connecting...')
+			log.debug('Connecting...')
 
 			err_msg = None
 			try: await console.connect(conn_dst, timeout=self.conf.timeout.connect)
 			except asyncio.TimeoutError as err: err_msg = 'timed-out'
 			except socket.error as err: err_msg = err
 			if err_msg:
-				return self.log.info( 'Telnet connection failed'
-					' (host={}, port={}): {}', conn_dst['host'], conn_dst['port'], err_msg )
+				return log.info( 'Connection failed (host={},'
+					' port={}): {}', conn_dst['host'], conn_dst['port'], err_msg )
 
 			user, password, shell = self.conf.user, self.conf.password, False
 			if user and password:
-				self.log.debug('[poll-status] auth...')
+				log.debug('Auth...')
 				err_msg = None
 				try:
 					await asyncio_wait_or_cancel( self.loop,
@@ -389,8 +471,8 @@ class ConsolePoller:
 				except asyncio.TimeoutError: err_msg = 'timed-out'
 				except PollerError as err: err_msg = f'failed (repeated {err} prompt)'
 				if err_msg:
-					return self.log.info( 'Telnet authentication {}'
-						' (host={}, port={})', err_msg, conn_dst['host'], conn_dst['port'] )
+					return log.info( 'Authentication {} (host={},'
+						' port={})', err_msg, conn_dst['host'], conn_dst['port'] )
 				shell = True # is matched to confirm auth
 
 			for cmd_id, cmd in enumerate(self.cmds):
@@ -399,17 +481,17 @@ class ConsolePoller:
 						m, line, line_buff = await asyncio_wait_or_cancel(
 							self.loop, console.match(shell=self.conf.telnet.re_shell), self.conf.timeout.shell )
 					else: shell = False
-					self.log.debug('[poll-status] command #{}: {!r}', cmd_id, cmd['command'])
+					log.debug('Sending command #{}: {!r}', cmd_id, cmd['command'])
 					await asyncio_wait_or_cancel( self.loop,
 						console.writeline(cmd['command'], flush=True), self.conf.timeout.shell )
 					if cmd.get('store_line'):
 						entry = await asyncio_wait_or_cancel(
 							self.loop, console.readline(), self.conf.timeout.data )
-						self.log.debug('[poll-status] got data for #{}: {!r}', cmd_id, entry)
+						log.debug('Data for command #{}: {!r}', cmd_id, entry)
 						data.append(DataEntry(self.host, time.time(), cmd_id, entry.split()))
 				except asyncio.TimeoutError:
-					return self.log.info( 'Telnet command timed-out'
-						' (host={}, port={})', conn_dst['host'], conn_dst['port'] )
+					return log.info( 'Command #{} timed-out'
+						' (host={}, port={})', cmd_id, conn_dst['host'], conn_dst['port'] )
 
 			await console.disconnect()
 
@@ -436,44 +518,59 @@ class ConsolePoller:
 
 
 	async def run_poll_ssh(self):
-		return
+		if self.host_cached is None: await self.host_resolve_cache()
+		if self.host_cached:
+			conn_dst = self.host_cached['host']
+			if self.host_cached['family'] == socket.AF_INET6: conn_dst = f'[{conn_dst}]'
+		else: conn_dst = self.host
+		log = LogPrefixAdapter(self.log, 'ssh')
 
+		data = list()
+		async with SSHConsole(self.loop) as console:
+			cmd = self.conf.ssh.opts
+			if isinstance(cmd, str): cmd = cmd.split()
+			cmd = [self.conf.ssh.binary, f'{self.conf.user}@{conn_dst}', *cmd]
+			log.debug('Starting ssh subprocess: {}', cmd)
+			await console.start(cmd) # should be no timeouts here
 
-	# async def __aenter__(self):
-	# 	await self.run(wait=False)
-	# 	return self
+			password = self.conf.password
+			if password:
+				log.debug('Auth...')
+				try:
+					await asyncio_wait_or_cancel( self.loop,
+						self.run_poll_ssh_auth(console, password), self.conf.timeout.auth )
+				except asyncio.TimeoutError:
+					return log.info('Authentication for {!r} timed-out', conn_dst)
 
-	# async def __aexit__(self, *err):
-	# 	if self.finished and not self.finished.done():
-	# 		self.finished.cancel()
-	# 		with contextlib.suppress(asyncio.CancelledError): await self.finished
+			for cmd_id, cmd in enumerate(self.cmds):
+				try:
+					log.debug('Sending command #{}: {!r}', cmd_id, cmd['command'])
+					console.writeline(cmd['command'])
+					if cmd.get('store_line'):
+						entry = await asyncio_wait_or_cancel(
+							self.loop, console.readline(), self.conf.timeout.data )
+						if self.conf.ssh.re_password and re.search(self.conf.ssh.re_password, line):
+							return log.info('Authentication for {!r} failed', conn_dst)
+						log.debug('Data for command #{}: {!r}', cmd_id, entry)
+						data.append(DataEntry(self.host, time.time(), cmd_id, entry.split()))
+				except asyncio.TimeoutError:
+					return log.info('Command #{} (host={!r}) timed-out', cmd_id, conn_dst)
 
-	# async def run(self, wait=True):
-	# 	assert not self.proc
-	# 	log.debug('[{!r}] running: {}', self.src, self.cmd_repr)
-	# 	if self.progress_func: self.kws['stdout'] = subprocess.PIPE
-	# 	self.proc = await asyncio.create_subprocess_exec(*self.cmd, **self.kws)
-	# 	for k in 'stdin', 'stdout', 'stderr': setattr(self, k, getattr(self.proc, k))
-	# 	self.finished = self.loop.create_task(self.wait())
-	# 	if wait: await self.finished
-	# 	return self
+			exit_code = await console.stop()
+			if exit_code != 0:
+				log.error('Subprocess for {!r} exited with error code {}', conn_dst, exit_code)
 
-	# async def wait(self):
-	# 	progress_task = None
-	# 	if self.progress_func and self.proc.stdout:
-	# 		progress_task = self.loop.create_task(self.print_progress())
-	# 	try:
-	# 		await self.proc.wait()
-	# 		if progress_task: await progress_task
-	# 		if self.proc.returncode != 0:
-	# 			cmd_repr = '' if not self.cmd_repr else f': {self.cmd_repr}'
-	# 			raise AudioConvError(( f'Command for src {self.src!r}'
-	# 				f' exited with non-zero status ({self.proc.returncode}){cmd_repr}' ))
-	# 	finally:
-	# 		if progress_task and not progress_task.done():
-	# 			progress_task.cancel()
-	# 			with contextlib.suppress(asyncio.CancelledError): await progress_task
+		return data
 
+	async def run_poll_ssh_auth(self, console, password):
+		while True:
+			line = (await console.readline()).decode()
+			if not line: break
+			if re.search(self.conf.ssh.re_known_hosts, line):
+				console.writeline('yes')
+			elif password and re.search(self.conf.ssh.re_password, line):
+				console.writeline(password)
+				break
 
 
 def main(args=None):
