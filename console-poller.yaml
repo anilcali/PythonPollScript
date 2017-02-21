@@ -82,7 +82,7 @@ commands:
         - hostname: host
         - time: time
 
-  # - command: cmd2 -e 'some stuff' -x -- arg1 arg2
+  # - command: echo -- -e 'some stuff' -x -- arg1 arg2
   #   store_line:
   #     table: table2
   #     columns:

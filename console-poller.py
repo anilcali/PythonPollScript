@@ -167,7 +167,7 @@ class ConsolePollerDB:
 			params.append(value)
 		if not re.search(r'^\s*where\b', raw_where.lower()): raw_where = f'WHERE {raw_where}'
 		with contextlib.closing(self.db.cursor()) as cur:
-			cur.execute('SELECT * FROM {} {}'.format(table, raw_where or ''), params)
+			cur.execute('SELECT {} FROM {} {}'.format(fields, table, raw_where or ''), params)
 			return cur.fetchall()
 
 	async def run(self):
@@ -187,7 +187,15 @@ class ConsolePollerDB:
 					entry_data, store_spec = OrderedDict(), self.cmd_store[entry.cmd_id]
 					for (col_name, spec), value_raw in it.zip_longest(
 							store_spec.columns.items(), entry.column_data ):
-						col_type, value = self.convert_type(col_name, spec, entry, value_raw)
+						try: col_type, value = self.convert_type(col_name, spec, entry, value_raw)
+						except (TypeError, ValueError) as err:
+							log_func = ( self.log.exception
+								if self.log.isEnabledFor(logging.DEBUG) else self.log.error )
+							log_func(
+								'Unable to convert value for column {!r} (table={}),'
+									' to db type ({}, [{}] {!r}) discarding whole entry: {}',
+								col_name, store_spec.table, spec, err.__class__.__name__, str(err), entry )
+							break
 						if value is None:
 							self.log.error( 'Missing value for column {!r} (type: {}, table: {}),'
 								' discarding whole entry: {}', col_name, spec, store_spec.table, entry )
