@@ -4,6 +4,7 @@ import itertools as it, operator as op, functools as ft
 from collections import namedtuple, Mapping, ChainMap, OrderedDict
 import sqlite3, asyncio, asyncio.subprocess, socket, signal, contextlib
 import os, sys, logging, pathlib, time, re, random, tempfile
+import readline, shutil # for querying ui
 
 import yaml # http://pyyaml.org/
 
@@ -136,6 +137,11 @@ class ConsolePollerDB:
 			return {'host': 'varchar', 'time': 'int'}[col_type], value
 		raise ConfigError(f'Unknown db column type: {col_type} (column: {col_name})')
 
+	def __enter__(self):
+		self.init()
+		return self
+	def __exit__(self, *err): self.close()
+
 	def init(self):
 		tables = dict()
 		self.db = sqlite3.connect(self.conf.path, timeout=60)
@@ -152,6 +158,17 @@ class ConsolePollerDB:
 
 	def close(self):
 		self.db.close()
+
+	def query(self, table, fields='*', raw_where=None, column=None, value=None, chk='='):
+		params = list()
+		if not isinstance(fields, str): fields = ', '.join(fields)
+		if not raw_where and column:
+			raw_where = '{} {} ?'.format(column, chk)
+			params.append(value)
+		if not re.search(r'^\s*where\b', raw_where.lower()): raw_where = f'WHERE {raw_where}'
+		with contextlib.closing(self.db.cursor()) as cur:
+			cur.execute('SELECT * FROM {} {}'.format(table, raw_where or ''), params)
+			return cur.fetchall()
 
 	async def run(self):
 		commit_delay = self.conf.get('commit_delay') or 0
@@ -539,10 +556,7 @@ class ConsolePoller:
 
 
 
-
-
-import readline, shutil
-
+### Interactive db-querying UI
 
 class ReadlineQuery:
 
@@ -560,6 +574,16 @@ class ReadlineQuery:
 	def __init__(self):
 		self.opts, self.log = list(), get_logger('readline')
 
+	def __enter__(self):
+		self.init()
+		return self
+	def __exit__(self, *err): pass
+
+	def init(self):
+		readline.set_completer_delims('')
+		readline.set_completer(self.rl_complete)
+		readline.parse_and_bind('tab: complete')
+
 	@log_debug_errors
 	def rl_complete(self, text, state):
 		if state == 0:
@@ -568,46 +592,59 @@ class ReadlineQuery:
 		try: return self.matches[state]
 		except IndexError: return None
 
-	@log_debug_errors
-	def rl_display_matches(self, subst, matches, longest_match_length):
-		line_buffer = readline.get_line_buffer()
-		columns = shutil.get_terminal_size()[0]
-		print()
-		tpl = '{:<' + str(int(max(map(len, matches)) * 1.2)) + '}'
-
-		line = ''
-		for m in matches:
-			m = tpl.format(m)
-			if len(line + m) > columns: line = print(line) or ''
-			line += m
-		if line: print(line)
-
-		print(self.prompt, end='')
-		print(line_buffer, end='')
-		sys.stdout.flush()
-
-	def init(self):
-		readline.set_completer_delims(' \t\n;')
-		readline.set_completer(self.rl_complete)
-		readline.parse_and_bind('tab: complete')
-		readline.set_completion_display_matches_hook(self.rl_display_matches)
-
 	def input(self, query, options=None):
 		self.opts.clear()
 		if options: self.opts.extend(options)
-		print(f'{query}\n\t')
+		print(query)
 		return input(self.prompt)
+
 
 def db_interactive_query(conf, cmd_store):
 	log = get_logger('query')
 	log.debug('Initializing ConsolePollerDB...')
-	db = ConsolePollerDB(conf, cmd_store)
-	db.init()
+	with ConsolePollerDB(conf, cmd_store) as db, ReadlineQuery() as rlq:
 
-	query = ReadlineQuery()
-	query.init()
+		table_col_opts, table_col_check = list(), dict()
+		for spec in sorted(cmd_store.values(), key=op.attrgetter('table')):
+			for col_name, col_type in sorted(spec.columns.items()):
+				option = f'{spec.table} {col_name}'
+				table_col_opts.append(option)
+				table_col_check[option.lower()] = col_type
 
-	query.input('Some stuff', ['table1', 'table2', 'table3'])
+		with contextlib.suppress(EOFError, KeyboardInterrupt):
+			while True:
+				while True:
+					table_col = rlq.input('Enter TableName and ColumnName:', table_col_opts)
+					table_col = ' '.join(table_col.strip().split(None, 1)).lower()
+					if table_col in table_col_check: break
+					if table_col: print(f'ERROR: Non-existent table/column spec: {table_col!r}\n')
+				print()
+				(table, col_name), col_type = table_col.split(None, 1), table_col_check[table_col]
+
+				while True:
+					while True:
+						value = rlq.input( 'Enter column value'
+							' (empty - return to table/column selection):' ).strip()
+						if not value: break
+						try:
+							col_type, value = db.convert_type(col_name, col_type, None, value)
+							if value is None: raise ValueError
+						except:
+							print(f'ERROR: Unable to convert specified value to type {col_type!r}: {value!r}\n')
+							continue
+						break
+					print()
+					if not value: break
+
+					query = dict(column=col_name, value=value)
+					if isinstance(value, bytes):
+						query.update(value=f'%{value.decode()}%'.encode(), chk='LIKE')
+					rows = db.query(table=table, **query)
+					print(f'{len(rows)} matching result(s) found')
+					for row in rows:
+						print(' '.join((str(v) if not isinstance(v, bytes) else v.decode()) for v in row))
+					print()
+
 
 
 def main(args=None):
