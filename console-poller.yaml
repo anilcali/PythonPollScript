@@ -21,8 +21,15 @@ options:
     re_password: '\bPassword:\s*$'
     re_shell: '#\s*$' # must be matched after auth and before each command
 
-  ## ssh_opts: ssh command-line options, can be either space-delimited string or a list.
-  ssh_opts:
+  ## ssh: options for ssh connections via command-line "ssh" binary (openssh).
+  ssh:
+    ## opts: extra options to pass to binary, either list or a space-separated string.
+    ## Note that the binary will read the usual ssh config files as well, things can be specified there.
+    ## Example: opts: -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null
+    ## Example: opts: [-p2222, '-oProxyCommand=ssh -W %h:%p jumphost.example.org']
+    opts:
+    re_password: '\bpassword:\s*$'
+    re_shell: '[#$%]\s*$' # must be matched after auth and before each command
 
   ## cache: various caching options
   cache:

@@ -370,24 +370,28 @@ class ConsolePoller:
 		data = list()
 		async with TelnetConsole(self.loop) as console:
 			self.log.debug('[poll-status] connecting...')
-			conn_err = None
+
+			err_msg = None
 			try: await console.connect(conn_dst, timeout=self.conf.timeout.connect)
-			except asyncio.TimeoutError as err: conn_err = 'timed-out'
-			except socket.error as err: conn_err = err
-			if conn_err:
+			except asyncio.TimeoutError as err: err_msg = 'timed-out'
+			except socket.error as err: err_msg = err
+			if err_msg:
 				return self.log.info( 'Telnet connection failed'
-					' (host={}, port={}): {}', conn_dst['host'], conn_dst['port'], conn_err )
+					' (host={}, port={}): {}', conn_dst['host'], conn_dst['port'], err_msg )
 
 			user, password, shell = self.conf.user, self.conf.password, False
 			if user and password:
 				self.log.debug('[poll-status] auth...')
+				err_msg = None
 				try:
 					await asyncio_wait_or_cancel( self.loop,
 						self.run_poll_telnet_auth(console, user, password), self.conf.timeout.auth )
-				except asyncio.TimeoutError:
-					return self.log.info( 'Telnet authentication timed-out'
-						' (host={}, port={})', conn_dst['host'], conn_dst['port'] )
-				shell = True
+				except asyncio.TimeoutError: err_msg = 'timed-out'
+				except PollerError as err: err_msg = f'failed (repeated {err} prompt)'
+				if err_msg:
+					return self.log.info( 'Telnet authentication {}'
+						' (host={}, port={})', err_msg, conn_dst['host'], conn_dst['port'] )
+				shell = True # is matched to confirm auth
 
 			for cmd_id, cmd in enumerate(self.cmds):
 				try:
@@ -417,12 +421,16 @@ class ConsolePoller:
 				user=self.conf.telnet.re_login,
 				password=self.conf.telnet.re_password,
 				auth_done=self.conf.telnet.re_shell )
-			if m == 'user' and user:
-				await console.writeline(user)
-				user = None
-			elif m == 'password' and password:
-				await console.writeline(password)
-				password = None
+			if m == 'user':
+				if user:
+					await console.writeline(user)
+					user = None
+				else: raise PollerError('login')
+			elif m == 'password':
+				if password:
+					await console.writeline(password)
+					password = None
+				else: raise PollerError('password')
 			elif m == 'auth_done': break
 			if not self.conf.telnet.re_shell and not (user or password): break
 
