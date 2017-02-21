@@ -90,7 +90,7 @@ async def asyncio_wait_or_cancel(
 
 
 
-### Main eventloop
+### Main poller eventloop components
 
 class PollerError(Exception): pass
 
@@ -98,11 +98,27 @@ StoreSpec = namedtuple('StoreSpec', 'table columns')
 DataEntry = namedtuple('DataEntry', 'host ts cmd_id column_data')
 
 
+def get_db_schema_for_commands(conf_commands):
+	cmd_store = dict()
+	for cmd_id, cmd_opts in enumerate(conf_commands):
+		assert cmd_opts['command']
+		if 'store_line' not in cmd_opts: continue
+		try:
+			columns = OrderedDict()
+			for col_spec in cmd_opts['store_line']['columns']:
+				(col_name, col_spec), = col_spec.items()
+				columns[col_name] = col_spec
+			cmd_store[cmd_id] = StoreSpec(cmd_opts['store_line']['table'], columns)
+		except KeyError:
+			raise ConfigError(f'Invalid storage options for command: {cmd_opts}')
+	return cmd_store
+
+
 class ConsolePollerDB:
 
 	pool = None
 
-	def __init__(self, loop, queue, conf, cmd_store):
+	def __init__(self, conf, cmd_store, loop=None, queue=None):
 		self.loop, self.conf, self.q, self.cmd_store = loop, conf, queue, cmd_store
 		self.log = get_logger('poller.db')
 
@@ -182,20 +198,10 @@ class ConsolePollerDaemon:
 
 	async def __aenter__(self):
 		self.success, self.exit_sig = False, None
-		cmd_store = dict()
-		for cmd_id, cmd_opts in enumerate(self.conf.commands):
-			assert cmd_opts['command']
-			if 'store_line' not in cmd_opts: continue
-			try:
-				columns = OrderedDict()
-				for col_spec in cmd_opts['store_line']['columns']:
-					(col_name, col_spec), = col_spec.items()
-					columns[col_name] = col_spec
-				cmd_store[cmd_id] = StoreSpec(cmd_opts['store_line']['table'], columns)
-			except KeyError:
-				raise ConfigError(f'Invalid storage options for command: {cmd_opts}')
+		cmd_store = get_db_schema_for_commands(self.conf.commands)
 		self.db_queue = asyncio.Queue()
-		self.db = ConsolePollerDB(self.loop, self.db_queue, self.conf.database, cmd_store)
+		self.db = ConsolePollerDB( self.conf.database,
+			cmd_store, loop=self.loop, queue=self.db_queue )
 		self.db.init()
 		return self
 
@@ -532,6 +538,78 @@ class ConsolePoller:
 		return data
 
 
+
+
+
+import readline, shutil
+
+
+class ReadlineQuery:
+
+	prompt = '> '
+
+	def log_debug_errors(func):
+		@ft.wraps(func)
+		def _wrapper(self, *args, **kws):
+			try: return func(self, *args, **kws)
+			except Exception as err:
+				if not self.log.isEnabledFor(logging.DEBUG): raise
+				self.log.exception('readline callback error: {}', err)
+		return _wrapper
+
+	def __init__(self):
+		self.opts, self.log = list(), get_logger('readline')
+
+	@log_debug_errors
+	def rl_complete(self, text, state):
+		if state == 0:
+			if not text: self.matches = self.opts[:]
+			else: self.matches = list(s for s in self.opts if s and s.startswith(text))
+		try: return self.matches[state]
+		except IndexError: return None
+
+	@log_debug_errors
+	def rl_display_matches(self, subst, matches, longest_match_length):
+		line_buffer = readline.get_line_buffer()
+		columns = shutil.get_terminal_size()[0]
+		print()
+		tpl = '{:<' + str(int(max(map(len, matches)) * 1.2)) + '}'
+
+		line = ''
+		for m in matches:
+			m = tpl.format(m)
+			if len(line + m) > columns: line = print(line) or ''
+			line += m
+		if line: print(line)
+
+		print(self.prompt, end='')
+		print(line_buffer, end='')
+		sys.stdout.flush()
+
+	def init(self):
+		readline.set_completer_delims(' \t\n;')
+		readline.set_completer(self.rl_complete)
+		readline.parse_and_bind('tab: complete')
+		readline.set_completion_display_matches_hook(self.rl_display_matches)
+
+	def input(self, query, options=None):
+		self.opts.clear()
+		if options: self.opts.extend(options)
+		print(f'{query}\n\t')
+		return input(self.prompt)
+
+def db_interactive_query(conf, cmd_store):
+	log = get_logger('query')
+	log.debug('Initializing ConsolePollerDB...')
+	db = ConsolePollerDB(conf, cmd_store)
+	db.init()
+
+	query = ReadlineQuery()
+	query.init()
+
+	query.input('Some stuff', ['table1', 'table2', 'table3'])
+
+
 def main(args=None):
 	import argparse
 	parser = argparse.ArgumentParser(
@@ -546,6 +624,11 @@ def main(args=None):
 				' name as the script, but with yaml extension, if it exists.'
 			' See default config alongside this script for the general structure.'
 			' Command-line options override values there.')
+
+	parser.add_argument('-q', '--query',
+		const=True, nargs='?', metavar='db-path',
+		help='Interactively query data from the database, either specified'
+			' in config file (see -c/--conf option) or as an argument to this option.')
 
 	parser.add_argument('-i', '--poll-interval', type=float, metavar='seconds',
 		help='Default interval between running batches of commands on hosts.'
@@ -572,6 +655,15 @@ def main(args=None):
 	if len(conf) > 1: conf.append(dict()) # for local overrides
 	conf = Config(*reversed(conf))
 
+	if (conf.database.get('path') or 'auto') == 'auto':
+		p = pathlib.Path(conf_paths[-1])
+		conf.database.path = str(p.parent / (p.stem + '.sqlite'))
+
+	if opts.query:
+		if opts.query is not True: conf.database.path = opts.query
+		cmd_store = get_db_schema_for_commands(conf.commands)
+		return db_interactive_query(conf.database, cmd_store)
+
 	conn_opts_cli = dict()
 	if opts.poll_interval is not None:
 		conn_opts_cli['poll_interval'] = opts.poll_interval
@@ -579,10 +671,6 @@ def main(args=None):
 		conn_opts_cli['poll_initial_jitter'] = opts.poll_initial_jitter
 	for conn_opts in [conf.options] + list(conf.hosts.values()):
 		conn_opts.update(conn_opts_cli)
-
-	if (conf.database.get('path') or 'auto') == 'auto':
-		p = pathlib.Path(conf_paths[-1])
-		conf.database.path = str(p.parent / (p.stem + '.sqlite'))
 
 	log.debug('Starting main eventloop...')
 	with contextlib.closing(asyncio.get_event_loop()) as loop:
