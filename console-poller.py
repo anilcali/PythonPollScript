@@ -507,6 +507,8 @@ class ConsolePoller:
 				if cmd.get('store_line'):
 					entry = await asyncio_wait_or_cancel(
 						self.loop, console.readline(), self.conf.timeout.data )
+					if not entry:
+						raise socket.error(0, f'Connection closed in response to command #{cmd_id}')
 					log.debug('Data for command #{}: {!r}', cmd_id, entry)
 					data.append(DataEntry(self.host, time.time(), cmd_id, entry.split()))
 
@@ -558,10 +560,12 @@ class ConsolePoller:
 					if cmd.get('store_line'):
 						entry = await asyncio_wait_or_cancel(
 							self.loop, console.readline(), self.conf.timeout.data )
+						if not entry:
+							return log.info('Connection closed in response to command #{}', cmd_id)
 						log.debug('Data for command #{}: {!r}', cmd_id, entry)
 						data.append(DataEntry(self.host, time.time(), cmd_id, entry.split()))
 				except asyncio.TimeoutError:
-					return log.info('Command #{} (host={!r}) timed-out', cmd_id, conn_dst)
+					return log.info('Command #{} timed-out', cmd_id, conn_dst)
 
 			log.debug('Stopping ssh subprocess...')
 			exit_code = await console.stop(timeout=self.conf.timeout.kill)
