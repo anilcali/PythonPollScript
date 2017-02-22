@@ -89,6 +89,17 @@ async def asyncio_wait_or_cancel(
 		if default is ...: raise err
 		else: return default
 
+def log_err_or_exc(log, exc_info=None):
+	log_debug = log.isEnabledFor(logging.DEBUG)
+	func = log.exception if log_debug else log.error
+	if log_debug and exc_info: func = ft.partial(func, exc_info=exc_info)
+	return func
+
+def repr_err(err, err_type=None, err_str=False):
+	if not err_type: err_type = err.__class__
+	if err_str: err = repr(str(err))
+	return f'[{err_type.__name__}] {err}'
+
 
 
 ### Main poller eventloop components
@@ -189,12 +200,10 @@ class ConsolePollerDB:
 							store_spec.columns.items(), entry.column_data ):
 						try: col_type, value = self.convert_type(col_name, spec, entry, value_raw)
 						except (TypeError, ValueError) as err:
-							log_func = ( self.log.exception
-								if self.log.isEnabledFor(logging.DEBUG) else self.log.error )
-							log_func(
+							log_err_or_exc(self.log)(
 								'Unable to convert value for column {!r} (table={}),'
-									' to db type ({}, [{}] {!r}) discarding whole entry: {}',
-								col_name, store_spec.table, spec, err.__class__.__name__, str(err), entry )
+									' to db type ({}, {}) discarding whole entry: {}',
+								col_name, store_spec.table, spec, repr_err(err, err_str=True), entry )
 							break
 						if value is None:
 							self.log.error( 'Missing value for column {!r} (type: {}, table: {}),'
@@ -313,11 +322,19 @@ class TelnetConsole:
 
 	transport = r = w = None
 
-	def __init__(self, loop): self.loop = loop
+	def __init__(self, loop, log):
+		self.loop, self.log = loop, log
 
 	async def __aenter__(self): return self
-	async def __aexit__(self, *err):
+	async def __aexit__(self, err_t, err, err_tb):
 		if self.transport: self.transport.abort()
+		if err is not None:
+			err_msg = None
+			if issubclass(err_t, socket.error): err_msg = repr_err(err, err_t)
+			elif issubclass(err_t, asyncio.TimeoutError): err_msg = 'timed-out'
+			if err_msg:
+				log_err_or_exc(self.log, (err_t, err, err_tb))('Connection error: {}', err_msg)
+				return True # won't be propagated
 
 	async def connect(self, conn_dst, timeout=None):
 		self.r = TelnetLineReader(loop=self.loop)
@@ -356,7 +373,8 @@ class SSHConsole:
 
 	proc = askpass = None
 
-	def __init__(self, loop): self.loop = loop
+	def __init__(self, loop, log):
+		self.loop, self.log = loop, log
 
 	async def __aenter__(self): return self
 	async def __aexit__(self, *err):
@@ -459,17 +477,12 @@ class ConsolePoller:
 			host=self.host, port=self.conf.telnet_port, proto=socket.IPPROTO_TCP )
 		log = LogPrefixAdapter(self.log, 'telnet')
 
-		data = list()
-		async with TelnetConsole(self.loop) as console:
-			log.debug('Connecting...')
+		data = None
+		async with TelnetConsole(self.loop, log) as console:
+			log.debug('Connecting to host={!r} port={!r}...', conn_dst['host'], conn_dst['port'])
 
 			err_msg = None
-			try: await console.connect(conn_dst, timeout=self.conf.timeout.connect)
-			except asyncio.TimeoutError as err: err_msg = 'timed-out'
-			except socket.error as err: err_msg = err
-			if err_msg:
-				return log.info( 'Connection failed (host={},'
-					' port={}): {}', conn_dst['host'], conn_dst['port'], err_msg )
+			await console.connect(conn_dst, timeout=self.conf.timeout.connect)
 
 			user, password, shell = self.conf.user, self.conf.password, False
 			if user and password:
@@ -478,30 +491,24 @@ class ConsolePoller:
 				try:
 					await asyncio_wait_or_cancel( self.loop,
 						self.run_poll_telnet_auth(console, user, password), self.conf.timeout.auth )
-				except asyncio.TimeoutError: err_msg = 'timed-out'
-				except PollerError as err: err_msg = f'failed (repeated {err} prompt)'
-				if err_msg:
-					return log.info( 'Authentication {} (host={},'
-						' port={})', err_msg, conn_dst['host'], conn_dst['port'] )
+				except PollerError as err:
+					return log.info('Authentication failed: repeated {} prompt', err)
 				shell = True # is matched to confirm auth
 
+			data = list()
 			for cmd_id, cmd in enumerate(self.cmds):
-				try:
-					if not shell:
-						m, line, line_buff = await asyncio_wait_or_cancel(
-							self.loop, console.match(shell=self.conf.telnet.re_shell), self.conf.timeout.shell )
-					else: shell = False
-					log.debug('Sending command #{}: {!r}', cmd_id, cmd['command'])
-					await asyncio_wait_or_cancel( self.loop,
-						console.writeline(cmd['command'], flush=True), self.conf.timeout.shell )
-					if cmd.get('store_line'):
-						entry = await asyncio_wait_or_cancel(
-							self.loop, console.readline(), self.conf.timeout.data )
-						log.debug('Data for command #{}: {!r}', cmd_id, entry)
-						data.append(DataEntry(self.host, time.time(), cmd_id, entry.split()))
-				except asyncio.TimeoutError:
-					return log.info( 'Command #{} timed-out'
-						' (host={}, port={})', cmd_id, conn_dst['host'], conn_dst['port'] )
+				if not shell:
+					m, line, line_buff = await asyncio_wait_or_cancel(
+						self.loop, console.match(shell=self.conf.telnet.re_shell), self.conf.timeout.shell )
+				else: shell = False
+				log.debug('Sending command #{}: {!r}', cmd_id, cmd['command'])
+				await asyncio_wait_or_cancel( self.loop,
+					console.writeline(cmd['command'], flush=True), self.conf.timeout.shell )
+				if cmd.get('store_line'):
+					entry = await asyncio_wait_or_cancel(
+						self.loop, console.readline(), self.conf.timeout.data )
+					log.debug('Data for command #{}: {!r}', cmd_id, entry)
+					data.append(DataEntry(self.host, time.time(), cmd_id, entry.split()))
 
 			await console.disconnect()
 
@@ -535,14 +542,15 @@ class ConsolePoller:
 		else: conn_dst = self.host
 		log = LogPrefixAdapter(self.log, 'ssh')
 
-		data = list()
-		async with SSHConsole(self.loop) as console:
+		data = None
+		async with SSHConsole(self.loop, log) as console:
 			cmd = self.conf.ssh.opts
 			if isinstance(cmd, str): cmd = cmd.split()
 			cmd = [self.conf.ssh.binary, f'{self.conf.user}@{conn_dst}', *cmd]
 			log.debug('Starting ssh subprocess: {}', cmd)
 			await console.start(cmd, self.conf.password)
 
+			data = list()
 			for cmd_id, cmd in enumerate(self.cmds):
 				try:
 					log.debug('Sending command #{}: {!r}', cmd_id, cmd['command'])
