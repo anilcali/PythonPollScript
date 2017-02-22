@@ -162,12 +162,19 @@ class SQLiteBrowser:
 				if uii.seek.val:
 					query_filter.update(
 						chk='LIKE', col=uii.focus.col_name, v=f'%{uii.seek.val}%' )
-				uii.data.val = list(to_str(row[0]) for row in self.query(
+				uii.data.val_dict = dict(
+					(to_str(row[0]), row[0]) for row in self.query(
 					uii.focus.table_name, uii.focus.col_name, **query_filter ))
-				uii.data.val = list(filter(ft.partial(self.pat_match, uii.seek.val), uii.data.val))
+				uii.data.val = list(filter(ft.partial(self.pat_match, uii.seek.val), uii.data.val_dict))
 			else: uii.data.val = list()
 			uii.focus.val = 0
 		update_sec_focus('val', False)
+
+		if uii.focus.val_name:
+			uii.data.matches = list(' '.join(map(to_str, row))
+				for row in self.query( uii.focus.table_name,
+					col=uii.focus.col_name, v=uii.data.val_dict[uii.focus.val_name] ))
+		else: uii.data.matches = list()
 
 
 	def run(self):
@@ -238,14 +245,17 @@ class SQLiteBrowser:
 		uii = self.ui_info
 		w.erase()
 		uii.wh, uii.ww = w.getmaxyx()
+		uii.wh_half = uii.wh // 2
 
-		out = ft.partial(self.c_win_add, w)
-		paste = lambda *a,**k: out(row, pos, *a, **k)
+		addstr = ft.partial(self.c_win_add, w)
+		def out(row, pos, *args, **kws):
+			if row > uii.wh_half: return
+			addstr(row, pos, *args, **kws)
 
 		row, pos = uii.base.row, uii.base.pos + uii.sep.sec
 		for sec in 'table', 'col', 'val':
 			hl = uii.focus.sec_name == sec
-			paste(uii.sec_hrs[sec], hl=hl)
+			out(row, pos, uii.sec_hrs[sec], hl=hl)
 			if hl: out(row+1, pos-len(uii.mark), uii.mark)
 			out(row+1, pos, uii.seek[sec])
 			out(row+2, pos-1, '-' * (len(uii.sec_hrs[sec])+2))
@@ -272,14 +282,20 @@ class SQLiteBrowser:
 				out(row+n, pos-len(uii.mark), uii.mark)
 			out(row+n, pos, to_str(val), hl=hl)
 
+		row, pos = uii.wh_half + 1, uii.base.pos
+		header = 'Rows matching selected value'
+		addstr(row, pos+1, header)
+		addstr(row+1, pos, '-' * (len(header)+2))
+		for n, val in enumerate(uii.data.matches, 2): addstr(row+n, pos, val)
+
 		if uii.wh < 20: return
-		out(uii.wh - 3, uii.base.pos, '')
+		addstr(uii.wh - 3, uii.base.pos, '')
 		for key, desc in uii.controls.items():
-			out(' ')
-			out(key, hl=self.c.A_REVERSE)
-			out(' - ')
+			addstr(' ')
+			addstr(key, hl=self.c.A_REVERSE)
+			addstr(' - ')
 			desc_max_len = uii.ww - w.getyx()[1] - 1
-			out((desc + ' ')[:desc_max_len])
+			addstr((desc + ' ')[:desc_max_len])
 			if len(desc) >= desc_max_len: break
 
 

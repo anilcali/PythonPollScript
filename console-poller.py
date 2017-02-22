@@ -127,7 +127,7 @@ class ConsolePollerDB:
 		if col_type in ['int', 'float', 'real', 'varchar', 'text', 'char']:
 			if not value: value = None
 			elif col_type == 'int': value = int(value)
-			elif col_type in ['float', 'real']: col_type, value = 'real', int(value)
+			elif col_type in ['float', 'real']: col_type, value = 'real', float(value)
 			else: value = str(value).encode()
 			return col_type, value
 		if col_type in ['host', 'time']:
