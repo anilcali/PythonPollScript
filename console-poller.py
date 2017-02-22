@@ -492,7 +492,7 @@ class ConsolePoller:
 					await asyncio_wait_or_cancel( self.loop,
 						self.run_poll_telnet_auth(console, user, password), self.conf.timeout.auth )
 				except PollerError as err:
-					return log.info('Authentication failed: repeated {} prompt', err)
+					return log.info('Authentication failed: {}', err)
 				shell = True # is matched to confirm auth
 
 			data = list()
@@ -522,16 +522,17 @@ class ConsolePoller:
 				user=self.conf.telnet.re_login,
 				password=self.conf.telnet.re_password,
 				auth_done=self.conf.telnet.re_shell )
-			if m == 'user':
+			if not m: raise PollerError('connection closed')
+			elif m == 'user':
 				if user:
 					await console.writeline(user)
 					user = None
-				else: raise PollerError('login')
+				else: raise PollerError('repeated login prompt')
 			elif m == 'password':
 				if password:
 					await console.writeline(password)
 					password = None
-				else: raise PollerError('password')
+				else: raise PollerError('repeated password prompt')
 			elif m == 'auth_done': break
 			if not self.conf.telnet.re_shell and not (user or password): break
 

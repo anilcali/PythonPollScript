@@ -82,19 +82,20 @@ commands:
         - hostname: host
         - time: time
 
-  # - command: echo -- -e 'some stuff' -x -- arg1 arg2
-  #   store_line:
-  #     table: table2
-  #     columns:
-  #       - column5: varchar
-  #       - column6: int
-  #       - column7: int
-  #       - column8: float
-  #       - hostname: host
-  #       - time: time
+  - command: echo -- -e 'some stuff' -x -- arg1 arg2
+    store_line:
+      table: table2
+      columns:
+        - column5: varchar
+        - column6: int
+        - column7: int
+        - column8: float
+        - hostname: host
+        - time: time
 
   ## This command has no "store_line" section, so its output is discarded.
   - command: shutdown -r
+  - command: exit 0 # will make shell exit with code "0", regardless of earlier command
 
 
 ## database: misc SQLite3 database connection options and settings.
