@@ -4,21 +4,50 @@
 
 Python3/asyncio-based tool to poll data via commands to remote ssh/telnet consoles.
 
+Two main components are poller tool itself (console_poller.py), which can work
+in two modes - poller daemon and interactive readline-based querying interface,
+and console_poller_tui.py alternative ncurses-based tui querying interface.
+
 .. contents::
   :backlinks: none
 
 
-Requirements
+
+Installation
 ------------
+
+It's a regular package for Python 3.6+, just not on PyPI.
+
+Best way to install the tool is via pip_ (comes with python),
+using **any of** the following commands::
+
+  % pip install git+https://github.com/anilcali/PythonPollScript/
+  % pip install https://github.com/anilcali/PythonPollScript/archive/master.tar.gz
+
+(add --user option to install into $HOME for current user only)
+
+After that, run::
+
+  % console-poller -h
+  % console-poller-tui -h
+
+Both should work and show usage info, indicating that tool is installed
+correctly and is ready to use.
+
+When installing via pip_, example configuration file (console_poller.yaml from
+this repo) should be installed to either /usr/share/doc/console-poller or its
+~/.local/ equivalent (if installed via ``pip install --user``).
+
+More info on python packaging can be found at `packaging.python.org`_.
+
+Script requirements/dependencies (py modules get installed by pip automatically):
 
 - Python 3.6+
 - `PyYAML <http://pyyaml.org/>`_
 
-Best way to install the latter is probably from a distro package, otherwise can
-use e.g. ``pip install --user pyyaml`` (as the same uid that will be running the
-daemon), or `virtualenv <https://virtualenv.pypa.io/>`_ and such.
+.. _pip: http://pip-installer.org/
+.. _packaging.python.org: https://packaging.python.org/installing/
 
-See https://packaging.python.org/ for more info.
 
 
 Usage
@@ -28,9 +57,9 @@ Small term-screencast demo video (1:30, ~1.2M):
 `doc/console-poller-demo.2017-02-24.mp4
 <https://raw.githubusercontent.com/anilcali/PythonPollScript/master/doc/console-poller-demo.2017-02-24.mp4>`_
 
-With both main files stored as console_poller.{py,yaml}, can be started like this::
+When installed via pip, with config file in poller.yaml, can be started like this::
 
-  % ./console_poller.py --debug
+  % console-poller --debug -c poller.yaml
   2017-02-21 16:28:29 :: main DEBUG :: Starting main eventloop...
   2017-02-21 16:28:29 :: asyncio DEBUG :: Using selector: EpollSelector
   2017-02-21 16:28:29 :: poller.db DEBUG :: Starting ConsolePollerDB task (commit_delay: 0.50s)...
@@ -57,9 +86,16 @@ With both main files stored as console_poller.{py,yaml}, can be started like thi
   2017-02-21 16:28:31 :: main DEBUG :: Waiting for async generators to finish...
   2017-02-21 16:28:31 :: main DEBUG :: Finished
 
-And to then query the data::
+More than one config file can be specified (e.g. ``-c base.yaml -c
+production.yaml -c hosts1.yaml -c more-hosts.yaml``), with non-mapping values in
+each shadowing/overriding values from previous ones.
 
-  % ./console_poller.py --debug -q
+Options like ``--debug -i2 -j0`` can be used to quickly test rapid-polling all
+hosts, overriding intervals/jitter from the config.
+
+To query collected data interactively via readline-based interface::
+
+  % console-poller --debug -c poller.yaml -q
   2017-02-21 16:30:56 :: query DEBUG :: Initializing ConsolePollerDB...
   Enter TableName and ColumnName:
   > table1
@@ -75,48 +111,12 @@ And to then query the data::
   Enter column value (empty - return to table/column selection):
   > %
 
-There is also additional console_poller_tui.py script for simplier interactive
-access to "table -> column -> values" sqlite data hierarchy, without excessive
-typing that -q/--query option requires.
+Additional console_poller_tui.py script can be used as an alternative
+interactive interface to "table -> column -> values" sqlite data hierarchy,
+without excessive typing that -q/--query option requires.
 
 It's entirely separate from console_poller.py and yaml config and should work on
-any sqlite db, e.g.: ``./console_poller_tui.py console_poller.sqlite``
+any sqlite db, e.g.: ``console-poller-tui poller.sqlite``
 
-More info on various startup options::
-
-  % ./console_poller.py -h
-  usage: console_poller.py [-h] [-c path] [-q [db-path]] [-i seconds]
-                           [-j seconds] [--debug]
-
-  Tool to poll data via commands to remote ssh/telnet consoles.
-
-  optional arguments:
-    -h, --help            show this help message and exit
-    -c path, --conf path  Path to yaml configuration file(s). Can be specified
-                          multiple times, to load values from multiple files,
-                          with same-path values in latter ones override the
-                          former. Default is to try loading file with same name
-                          as the script, but with yaml extension, if it exists.
-                          See default config alongside this script for the
-                          general structure. Command-line options override
-                          values there.
-    -q [db-path], --query [db-path]
-                          Interactively query data from the database, either
-                          specified in config file (see -c/--conf option) or as
-                          an argument to this option.
-    -i seconds, --poll-interval seconds
-                          Default interval between running batches of commands
-                          on hosts. Overrides corresponding configuration file
-                          setting, including per-host settings.
-    -j seconds, --poll-initial-jitter seconds
-                          Override for options.poll_initial_jitter value, same
-                          as --poll-interval above.
-    --debug               Verbose operation mode.
-
-More than one config file can be specified (e.g. ``-c base.yaml -c
-production.yaml -c hosts1.yaml -c more-hosts.yaml``), with non-mapping values
-in each shadowing/overriding values from previous ones, going back to
-default one (which is "console_poller.yaml" in the same path as script, if exists).
-
-Options like ``--debug -i2 -j0`` can be used to quickly test rapid-polling all
-hosts, overriding intervals/jitter from the config.
+More info on various command-line options for either script can be displayed by
+running each with -h/--help option.

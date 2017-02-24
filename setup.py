@@ -10,7 +10,7 @@ except IOError: readme = ''
 setup(
 
 	name = 'console-poller',
-	version = '17.2.24',
+	version = '17.2.25',
 	author = 'Mike Kazantsev',
 	author_email = 'mk.fraggod@gmail.com',
 	# license = 'MIT',
