@@ -204,17 +204,16 @@ class ConsolePollerDB:
 								'Unable to convert value for column {!r} (table={}),'
 									' to db type ({}, {}) discarding whole entry: {}',
 								col_name, store_spec.table, spec, repr_err(err, err_str=True), entry )
-							break
+							continue
 						if value is None:
 							self.log.error( 'Missing value for column {!r} (type={}, table={}),'
 								' discarding whole entry: {}', col_name, spec, store_spec.table, entry )
-							break
+							continue
 						entry_data[col_name] = value
-					else:
-						self.db.execute(
-							'INSERT INTO {} ({}) VALUES ({})'.format( store_spec.table,
-								', '.join(entry_data.keys()), ', '.join(['?']*len(entry_data)) ),
-							list(entry_data.values()) )
+					self.db.execute(
+						'INSERT INTO {} ({}) VALUES ({})'.format( store_spec.table,
+							', '.join(entry_data.keys()), ', '.join(['?']*len(entry_data)) ),
+						list(entry_data.values()) )
 			finally: self.db.commit()
 
 
