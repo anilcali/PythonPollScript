@@ -25,7 +25,8 @@ Usage
 -----
 
 Small term-screencast demo video (1:30, ~1.2M):
-http://fraggod.net/share/ba15613e4c56c3a9f5/console-poller-demo.mp4
+`doc/console-poller-demo.2017-02-24.mp4
+<https://raw.githubusercontent.com/anilcali/PythonPollScript/master/doc/console-poller-demo.2017-02-24.mp4>`_
 
 With both main files stored as console-poller.{py,yaml}, can be started like this::
 
