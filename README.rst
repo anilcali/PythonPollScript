@@ -28,12 +28,12 @@ Small term-screencast demo video (1:30, ~1.2M):
 `doc/console-poller-demo.2017-02-24.mp4
 <https://raw.githubusercontent.com/anilcali/PythonPollScript/master/doc/console-poller-demo.2017-02-24.mp4>`_
 
-With both main files stored as console-poller.{py,yaml}, can be started like this::
+With both main files stored as console_poller.{py,yaml}, can be started like this::
 
-  % ./console-poller.py --debug
+  % ./console_poller.py --debug
   2017-02-21 16:28:29 :: main DEBUG :: Starting main eventloop...
   2017-02-21 16:28:29 :: asyncio DEBUG :: Using selector: EpollSelector
-  2017-02-21 16:28:29 :: poller.db DEBUG :: Starting ConsolePollerDB task (commit_delay: 0.50)...
+  2017-02-21 16:28:29 :: poller.db DEBUG :: Starting ConsolePollerDB task (commit_delay: 0.50s)...
   2017-02-21 16:28:29 :: poller.daemon DEBUG :: Initializing poller for host: localhost
   2017-02-21 16:28:29 :: poller.daemon DEBUG :: Initializing poller for host: cane
   2017-02-21 16:28:29 :: poller.daemon DEBUG :: Starting ConsolePollerDaemon loop...
@@ -59,7 +59,7 @@ With both main files stored as console-poller.{py,yaml}, can be started like thi
 
 And to then query the data::
 
-  % ./console-poller.py --debug -q
+  % ./console_poller.py --debug -q
   2017-02-21 16:30:56 :: query DEBUG :: Initializing ConsolePollerDB...
   Enter TableName and ColumnName:
   > table1
@@ -75,17 +75,17 @@ And to then query the data::
   Enter column value (empty - return to table/column selection):
   > %
 
-There is also additional sqlite-tui.py script for simplier interactive access to
-table -> column -> values sqlite data hierarchy, without excessive typing that
--q/--query option requires.
+There is also additional console_poller_tui.py script for simplier interactive
+access to "table -> column -> values" sqlite data hierarchy, without excessive
+typing that -q/--query option requires.
 
-It's entirely separate from console-poller.py and its config and should work on
-any sqlite db, e.g.: ``./sqlite-tui.py console-poller.sqlite``
+It's entirely separate from console_poller.py and yaml config and should work on
+any sqlite db, e.g.: ``./console_poller_tui.py console_poller.sqlite``
 
 More info on various startup options::
 
-  % ./console-poller.py -h
-  usage: console-poller.py [-h] [-c path] [-q [db-path]] [-i seconds]
+  % ./console_poller.py -h
+  usage: console_poller.py [-h] [-c path] [-q [db-path]] [-i seconds]
                            [-j seconds] [--debug]
 
   Tool to poll data via commands to remote ssh/telnet consoles.
@@ -113,11 +113,10 @@ More info on various startup options::
                           as --poll-interval above.
     --debug               Verbose operation mode.
 
-Note that you can specify >1 config files (e.g. ``-c base.yaml -c
-production.yaml -c hosts1.yaml -c more-hosts.yaml``), with non-mapping values in
-each next one shadowing/overriding values from previous ones, going back to
-default one (which is "console-poller.yaml" in the same path as script, if
-exists).
+More than one config file can be specified (e.g. ``-c base.yaml -c
+production.yaml -c hosts1.yaml -c more-hosts.yaml``), with non-mapping values
+in each shadowing/overriding values from previous ones, going back to
+default one (which is "console_poller.yaml" in the same path as script, if exists).
 
 Options like ``--debug -i2 -j0`` can be used to quickly test rapid-polling all
 hosts, overriding intervals/jitter from the config.

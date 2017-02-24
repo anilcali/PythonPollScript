@@ -1,0 +1,8 @@
+/*.egg-info
+/build
+/dist
+*.pyc
+*.pyo
+
+/console_poller.sqlite
+/*.log
