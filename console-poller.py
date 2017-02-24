@@ -184,7 +184,7 @@ class ConsolePollerDB:
 	async def run(self):
 		commit_delay = self.conf.get('commit_delay') or 0
 		self.log.debug( 'Starting ConsolePollerDB'
-			' task (commit_delay: {:.2f})...', commit_delay )
+			' task (commit_delay: {:.2f}s)...', commit_delay )
 		while True:
 			entries = [await self.q.get()]
 			if commit_delay > 0: await asyncio.sleep(commit_delay)
@@ -194,7 +194,7 @@ class ConsolePollerDB:
 			try:
 				self.log.debug('Processing {} data entries', len(entries))
 				for entry in entries:
-					if entry is StopIteration: break
+					if entry is StopIteration: return
 					entry_data, store_spec = OrderedDict(), self.cmd_store[entry.cmd_id]
 					for (col_name, spec), value_raw in it.zip_longest(
 							store_spec.columns.items(), entry.column_data ):
@@ -206,7 +206,7 @@ class ConsolePollerDB:
 								col_name, store_spec.table, spec, repr_err(err, err_str=True), entry )
 							break
 						if value is None:
-							self.log.error( 'Missing value for column {!r} (type: {}, table: {}),'
+							self.log.error( 'Missing value for column {!r} (type={}, table={}),'
 								' discarding whole entry: {}', col_name, spec, store_spec.table, entry )
 							break
 						entry_data[col_name] = value
@@ -215,8 +215,6 @@ class ConsolePollerDB:
 							'INSERT INTO {} ({}) VALUES ({})'.format( store_spec.table,
 								', '.join(entry_data.keys()), ', '.join(['?']*len(entry_data)) ),
 							list(entry_data.values()) )
-				else: continue
-				break
 			finally: self.db.commit()
 
 
