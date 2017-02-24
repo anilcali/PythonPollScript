@@ -1,10 +1,22 @@
+================
+ console-poller
+================
+
+Python3/asyncio-based tool to poll data via commands to remote ssh/telnet consoles.
+
+.. contents::
+  :backlinks: none
+
+
 Requirements
 ------------
 
 - Python 3.6+
 - `PyYAML <http://pyyaml.org/>`_
 
-Best way to install the latter is probably from a distro package, otherwise can use e.g. ``pip install --user pyyaml`` (as the same uid that will be running the daemon), or `virtualenv <https://virtualenv.pypa.io/>`_ and such.
+Best way to install the latter is probably from a distro package, otherwise can
+use e.g. ``pip install --user pyyaml`` (as the same uid that will be running the
+daemon), or `virtualenv <https://virtualenv.pypa.io/>`_ and such.
 
 See https://packaging.python.org/ for more info.
 
@@ -12,7 +24,8 @@ See https://packaging.python.org/ for more info.
 Usage
 -----
 
-Small term-screencast demo video (1:30, ~1.2M): http://fraggod.net/share/ba15613e4c56c3a9f5/console-poller-demo.mp4
+Small term-screencast demo video (1:30, ~1.2M):
+http://fraggod.net/share/ba15613e4c56c3a9f5/console-poller-demo.mp4
 
 With both main files stored as console-poller.{py,yaml}, can be started like this::
 
@@ -61,9 +74,12 @@ And to then query the data::
   Enter column value (empty - return to table/column selection):
   > %
 
-There is also additional sqlite-tui.py script for simplier interactive access to table -> column -> values sqlite data hierarchy, without excessive typing that -q/--query option requires.
+There is also additional sqlite-tui.py script for simplier interactive access to
+table -> column -> values sqlite data hierarchy, without excessive typing that
+-q/--query option requires.
 
-It's entirely separate from console-poller.py and its config and should work on any sqlite db, e.g.: ``./sqlite-tui.py console-poller.sqlite``
+It's entirely separate from console-poller.py and its config and should work on
+any sqlite db, e.g.: ``./sqlite-tui.py console-poller.sqlite``
 
 More info on various startup options::
 
@@ -96,6 +112,11 @@ More info on various startup options::
                           as --poll-interval above.
     --debug               Verbose operation mode.
 
-Note that you can specify >1 config files (e.g. ``-c base.yaml -c production.yaml -c hosts1.yaml -c more-hosts.yaml``), with non-mapping values in each next one shadowing/overriding values from previous ones, going back to default one (which is "console-poller.yaml" in the same path as script, if exists).
+Note that you can specify >1 config files (e.g. ``-c base.yaml -c
+production.yaml -c hosts1.yaml -c more-hosts.yaml``), with non-mapping values in
+each next one shadowing/overriding values from previous ones, going back to
+default one (which is "console-poller.yaml" in the same path as script, if
+exists).
 
-Options like ``--debug -i2 -j0`` can be used to quickly test rapid-polling all hosts, overriding intervals/jitter from the config.
+Options like ``--debug -i2 -j0`` can be used to quickly test rapid-polling all
+hosts, overriding intervals/jitter from the config.
