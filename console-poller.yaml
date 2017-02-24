@@ -101,7 +101,8 @@ commands:
 ## database: misc SQLite3 database connection options and settings.
 database:
   ## path: sqlite db path to use, will be created if missing.
-  ## Default is "auto" - to use same path as the config plus .sqlite extension.
+  ## Default is "auto" - to use same path as this configuration file, but with .sqlite extension,
+  ##  i.e. if config file is called "console-poller.yaml", db path with "auto" would be "console-poller.sqlite".
   path: auto
   ## commit_delay: seconds to wait before for extra data entries to commit in one batch.
   ## 0 to insert/commit each individual entry immediately.
